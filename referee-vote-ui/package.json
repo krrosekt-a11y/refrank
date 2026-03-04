@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "sync:supabase": "node scripts/sync_localdb_to_supabase.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
