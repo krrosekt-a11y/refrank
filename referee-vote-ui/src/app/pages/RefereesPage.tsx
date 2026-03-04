@@ -81,7 +81,7 @@ export function RefereesPage() {
               style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}
             >
               <Users size={20} color="#C8FF00" />
-              Hakemler
+              Hakem Listesi
             </div>
             <div style={{ color: "#44445A", fontSize: 11 }}>
               {filtered.length} hakem listeleniyor

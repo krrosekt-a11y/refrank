@@ -1,11 +1,10 @@
 import { useLocation, useNavigate } from "react-router";
-import { Home, Trophy, Calendar, User } from "lucide-react";
+import { Home, Calendar, User } from "lucide-react";
 import { motion } from "motion/react";
 
 const navItems = [
   { label: "Ana Sayfa", icon: Home, path: "/" },
   { label: "Maçlar", icon: Calendar, path: "/matches" },
-  { label: "Liderlik", icon: Trophy, path: "/leaderboard" },
   { label: "Profil", icon: User, path: "/profile" },
 ];
 

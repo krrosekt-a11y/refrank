@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { Bell, Search, SlidersHorizontal, Zap, Radio } from "lucide-react";
+import type { Referee } from "../data";
 import {
   fetchLiveVoteSnapshot,
   getOrCreateVoteUserKey,
@@ -8,6 +10,15 @@ import {
   submitLiveIncidentVote,
   type IncidentVoteStat,
 } from "../lib/liveVotes";
+import {
+  fetchDbReferees,
+  fetchLiveNowFixture,
+  fetchMatchDecisionEvents,
+  fetchUpcomingFixtures,
+  type LiveNowFixture,
+  type MatchDecisionEvent,
+  type UpcomingFixture,
+} from "../lib/localdbApi";
 
 type LiveIncident = {
   id: string;
@@ -18,51 +29,13 @@ type LiveIncident = {
   text: string;
 };
 
-const tabs = ["Tüm", "Fit", "Ligler", "Canlı", "Takvim"];
-
-const liveMatch = {
-  league: "Süper Lig",
-  minute: "67'",
-  homeTeam: "Galatasaray",
-  awayTeam: "Fenerbahçe",
-  homeScore: 1,
-  awayScore: 1,
-};
-
-const incidents: LiveIncident[] = [
-  {
-    id: "ev-1",
-    minute: "64'",
-    type: "goal",
-    team: "Galatasaray",
-    player: "M. Icardi",
-    text: "Gol kararı: ofsayt kontrolünden sonra geçerli sayıldı.",
-  },
-  {
-    id: "ev-2",
-    minute: "58'",
-    type: "yellow",
-    team: "Fenerbahçe",
-    player: "Fred",
-    text: "Sarı kart: geç müdahale.",
-  },
-  {
-    id: "ev-3",
-    minute: "52'",
-    type: "penalty",
-    team: "Fenerbahçe",
-    player: "S. Dzeko",
-    text: "Penaltı beklentisi: VAR devam kararı verdi.",
-  },
-  {
-    id: "ev-4",
-    minute: "49'",
-    type: "red",
-    team: "Galatasaray",
-    player: "K. Demirbay",
-    text: "Kırmızı kart itirazı: hakem sarı kartta kaldı.",
-  },
-];
+function mapEventType(ev: MatchDecisionEvent): LiveIncident["type"] {
+  const txt = `${ev.type || ""} ${ev.result || ""}`.toLowerCase();
+  if (txt.includes("red") || txt.includes("kırmızı")) return "red";
+  if (txt.includes("yellow") || txt.includes("sarı")) return "yellow";
+  if (txt.includes("penalt")) return "penalty";
+  return "goal";
+}
 
 function incidentBadge(type: LiveIncident["type"]) {
   if (type === "goal") return { label: "Gol", color: "#46D39A", bg: "rgba(70,211,154,0.16)" };
@@ -84,9 +57,50 @@ function normalizeScore(score: number): number {
 
 const EMPTY_STAT: IncidentVoteStat = { totalVotes: 0, average: null };
 
+function parseFixtureDate(raw: string): Date | null {
+  if (!raw) return null;
+  const d = new Date(String(raw).replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function formatFixtureDateShort(d: Date): string {
+  return d.toLocaleString("tr-TR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function extractWeekNumber(round?: string): number | null {
+  const txt = (round || "").trim();
+  if (!txt) return null;
+  const m = txt.match(/(\d{1,2})/);
+  if (!m) return null;
+  return Number(m[1]);
+}
+
+function formatCountdown(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  if (days > 0) return `${days}g ${String(hours).padStart(2, "0")}s ${String(minutes).padStart(2, "0")}d`;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 export function Home() {
-  const [activeTab, setActiveTab] = useState("Tüm");
-  const [expanded, setExpanded] = useState(false);
+  const navigate = useNavigate();
+  const [expandedMatchId, setExpandedMatchId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [referees, setReferees] = useState<Referee[]>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingFixture[]>([]);
+  const [liveNowFixture, setLiveNowFixture] = useState<LiveNowFixture | null>(null);
+  const [liveNowIncidents, setLiveNowIncidents] = useState<LiveIncident[]>([]);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [votes, setVotes] = useState<Record<string, number | undefined>>({});
   const [statsByIncident, setStatsByIncident] = useState<Record<string, IncidentVoteStat>>({});
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
@@ -95,15 +109,19 @@ export function Home() {
 
   const [supabaseReady] = useState(isLiveVotesConfigured);
   const [currentUserKey] = useState(getOrCreateVoteUserKey);
+  const liveIncidentKeys = useMemo(
+    () =>
+      liveNowFixture
+        ? liveNowIncidents.map((item) => `${String(liveNowFixture.fixture_id)}:${item.id}`)
+        : [],
+    [liveNowFixture, liveNowIncidents],
+  );
 
   useEffect(() => {
     if (!supabaseReady) return;
     let alive = true;
     setLoadingSnapshot(true);
-    fetchLiveVoteSnapshot(
-      incidents.map((x) => x.id),
-      currentUserKey
-    )
+    fetchLiveVoteSnapshot(liveIncidentKeys, currentUserKey)
       .then(({ myVotes, stats }) => {
         if (!alive) return;
         setVotes(myVotes);
@@ -119,23 +137,86 @@ export function Home() {
     return () => {
       alive = false;
     };
-  }, [supabaseReady, currentUserKey]);
+  }, [supabaseReady, currentUserKey, liveIncidentKeys]);
+
+  useEffect(() => {
+    let alive = true;
+    fetchDbReferees(200)
+      .then((rows) => {
+        if (alive) setReferees(rows);
+      })
+      .catch(() => {
+        if (alive) setReferees([]);
+      });
+
+    fetchUpcomingFixtures(21)
+      .then((upcomingRows) => {
+        if (alive) setUpcoming(upcomingRows);
+      })
+      .catch(() => {
+        if (alive) setUpcoming([]);
+      });
+
+    fetchLiveNowFixture()
+      .then(async (live) => {
+        if (!alive) return;
+        setLiveNowFixture(live);
+        if (!live) {
+          setLiveNowIncidents([]);
+          return;
+        }
+        const rows = await fetchMatchDecisionEvents({
+          fixtureId: live.fixture_id,
+          homeTeam: live.home_team,
+          awayTeam: live.away_team,
+          date: live.date,
+        });
+        if (!alive) return;
+        const mapped = rows
+          .map((ev) => ({
+            id: String(ev.id || ""),
+            minute: `${Number(ev.minute || 0)}${Number(ev.extra_minute || 0) > 0 ? `+${Number(ev.extra_minute)}` : ""}'`,
+            type: mapEventType(ev),
+            team: String(ev.team || "-"),
+            player: String(ev.player || ev.related_player || "Bilinmiyor"),
+            text: String(ev.result || ev.type || "Hakem kararı"),
+          }))
+          .filter((ev) => ev.id);
+        setLiveNowIncidents(mapped);
+      })
+      .catch(() => {
+        if (alive) {
+          setLiveNowFixture(null);
+          setLiveNowIncidents([]);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const votedCount = useMemo(() => {
-    return Object.values(votes).filter((v): v is number => typeof v === "number").length;
-  }, [votes]);
+    return liveIncidentKeys.filter((k) => typeof votes[k] === "number").length;
+  }, [liveIncidentKeys, votes]);
 
   const myAverageScore = useMemo(() => {
-    const values = Object.values(votes).filter((v): v is number => typeof v === "number");
+    const values = liveIncidentKeys
+      .map((k) => votes[k])
+      .filter((v): v is number => typeof v === "number");
     if (!values.length) return null;
     return values.reduce((sum, v) => sum + v, 0) / values.length;
-  }, [votes]);
+  }, [liveIncidentKeys, votes]);
 
   const communityStats = useMemo(() => {
     let totalVotes = 0;
     let weightedSum = 0;
-    for (const item of incidents) {
-      const stats = statsByIncident[item.id] || EMPTY_STAT;
+    for (const key of liveIncidentKeys) {
+      const stats = statsByIncident[key] || EMPTY_STAT;
       totalVotes += stats.totalVotes;
       weightedSum += (stats.average || 0) * stats.totalVotes;
     }
@@ -143,7 +224,87 @@ export function Home() {
       totalVotes,
       average: totalVotes ? weightedSum / totalVotes : null,
     };
-  }, [statsByIncident]);
+  }, [liveIncidentKeys, statsByIncident]);
+
+  const filteredReferees = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase("tr-TR");
+    if (!query) return [];
+    return referees
+      .filter((ref) => {
+        const haystack = `${ref.name} ${ref.league}`.toLocaleLowerCase("tr-TR");
+        return haystack.includes(query);
+      })
+      .slice(0, 6);
+  }, [searchQuery]);
+
+  const displayMatches = useMemo(() => {
+    if (liveNowFixture) {
+      const scoreMatch = String(liveNowFixture.score || "").match(/(\d+)\s*[-:]\s*(\d+)/);
+      const homeScore = scoreMatch ? Number(scoreMatch[1]) : 0;
+      const awayScore = scoreMatch ? Number(scoreMatch[2]) : 0;
+      return [
+        {
+          id: String(liveNowFixture.fixture_id),
+          league: liveNowFixture.league_name || "Canlı Lig",
+          statusLabel: "CANLI",
+          homeTeam: liveNowFixture.home_team,
+          awayTeam: liveNowFixture.away_team,
+          homeScore,
+          awayScore,
+          kickoffMs: Date.now(),
+          isLive: true,
+          countdownLabel: "",
+        },
+      ];
+    }
+
+    const TARGET_WEEK = 25;
+    const now = new Date(nowTick);
+
+    const parsed = upcoming
+      .map((f) => {
+        const d = parseFixtureDate(f.date);
+        if (!d) return null;
+        return { fixture: f, date: d, week: extractWeekNumber(f.round) };
+      })
+      .filter(
+        (x): x is { fixture: UpcomingFixture; date: Date; week: number | null } =>
+          Boolean(x),
+      )
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    let picked = parsed.filter((x) => x.week === TARGET_WEEK);
+    if (!picked.length) {
+      picked = parsed.filter((x) => x.date.getTime() >= now.getTime());
+    }
+    if (!picked.length) {
+      picked = parsed;
+    }
+
+    return picked.slice(0, 3).map(({ fixture, date }) => {
+      const kickoffMs = date.getTime();
+      const deltaMs = kickoffMs - nowTick;
+      const isLive = deltaMs <= 0 && deltaMs >= -2 * 60 * 60 * 1000;
+      return {
+      id: String(fixture.fixture_id),
+      league: fixture.league_name || "Lig",
+      statusLabel: isLive ? "CANLI" : formatFixtureDateShort(date),
+      homeTeam: fixture.home_team,
+      awayTeam: fixture.away_team,
+      homeScore: 0,
+      awayScore: 0,
+      kickoffMs,
+      isLive,
+      countdownLabel: formatCountdown(deltaMs),
+    };
+    });
+  }, [liveNowFixture, upcoming, nowTick]);
+
+  const liveCount = useMemo(
+    () => displayMatches.filter((m) => m.isLive).length,
+    [displayMatches],
+  );
+  const hasLive = liveCount > 0;
 
   async function setVote(incidentId: string, score: number) {
     const normalized = normalizeScore(score);
@@ -220,36 +381,68 @@ export function Home() {
             }}
           >
             <Search size={22} color="#4F5470" />
-            <span style={{ color: "#666B86", fontSize: 15, letterSpacing: "-0.2px", fontWeight: 500 }}>
-              Hakem ara...
-            </span>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Hakem ara..."
+              className="flex-1 bg-transparent outline-none"
+              style={{ color: "#D8DDF0", fontSize: 15, letterSpacing: "-0.2px", fontWeight: 500 }}
+            />
             <div className="ml-auto">
               <SlidersHorizontal size={22} color="#5E6382" />
             </div>
           </div>
 
-          <div className="mt-4 flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
-            {tabs.map((tab) => {
-              const active = tab === activeTab;
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => setActiveTab(tab)}
-                  className="px-4 py-2 rounded-full whitespace-nowrap"
-                  style={{
-                    border: active ? "1px solid rgba(200,255,0,0.46)" : "1px solid rgba(255,255,255,0.11)",
-                    background: active ? "rgba(136,182,0,0.22)" : "rgba(255,255,255,0.03)",
-                    color: active ? "#D6FF5D" : "#616780",
-                    fontSize: 13,
-                    fontWeight: 700,
-                  }}
-                >
-                  {tab}
-                </button>
-              );
-            })}
-          </div>
+          <AnimatePresence>
+            {searchQuery.trim().length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+                className="mt-3 rounded-3xl overflow-hidden"
+                style={{
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: "rgba(14,16,26,0.95)",
+                }}
+              >
+                {filteredReferees.length > 0 ? (
+                  filteredReferees.map((ref, index) => (
+                    <button
+                      key={ref.id}
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery("");
+                        navigate(`/referee/${ref.id}`);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-3"
+                      style={{
+                        borderBottom:
+                          index < filteredReferees.length - 1
+                            ? "1px solid rgba(255,255,255,0.05)"
+                            : "none",
+                      }}
+                    >
+                      <img
+                        src={ref.photo}
+                        alt={ref.name}
+                        className="rounded-full object-cover"
+                        style={{ width: 34, height: 34, border: "1px solid rgba(255,255,255,0.12)" }}
+                      />
+                      <div className="text-left min-w-0">
+                        <div style={{ color: "#F4F7FF", fontSize: 13, fontWeight: 700 }}>{ref.name}</div>
+                        <div style={{ color: "#7D88A7", fontSize: 11 }}>{ref.league}</div>
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-4 py-3" style={{ color: "#7D88A7", fontSize: 12 }}>
+                    Eşleşen hakem bulunamadı.
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 
@@ -266,7 +459,7 @@ export function Home() {
               }}
             />
             <h2 style={{ color: "#fff", fontSize: 30, fontWeight: 900, letterSpacing: "-0.8px" }}>
-              Canlı Maçlar
+              {hasLive ? "Canlı Maçlar" : "Gelecek Maçlar"}
             </h2>
           </div>
           <div
@@ -279,81 +472,97 @@ export function Home() {
               fontWeight: 800,
             }}
           >
-            <Radio size={14} /> 2 CANLI
+            <Radio size={14} /> {hasLive ? `${liveCount} CANLI` : `${displayMatches.length} GELECEK`}
           </div>
         </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25 }}
-          className="rounded-[30px] p-4"
-          style={{
-            border: "1px solid rgba(174,228,24,0.36)",
-            background:
-              "linear-gradient(145deg, rgba(108,148,0,0.2), rgba(18,21,32,0.94) 68%)",
-            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.03)",
-          }}
-        >
-          <div className="flex items-center justify-between mb-3">
-            <span style={{ color: "#D6FF5D", fontSize: 13, fontWeight: 800 }}>{liveMatch.league}</span>
-            <span style={{ color: "#FF5D66", fontSize: 15, fontWeight: 900 }}>• {liveMatch.minute}</span>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <div style={{ color: "#fff", fontSize: 16, fontWeight: 800, minWidth: 0, textAlign: "center" }}>
-              {liveMatch.homeTeam}
-            </div>
-            <div
-              className="rounded-[20px] px-4 py-2"
-              style={{
-                border: "1px solid rgba(174,228,24,0.4)",
-                background: "rgba(128,170,0,0.18)",
-                color: "#C8FF00",
-                fontSize: 30,
-                lineHeight: 1,
-                fontWeight: 900,
-              }}
-            >
-              {liveMatch.homeScore}-{liveMatch.awayScore}
-            </div>
-            <div style={{ color: "#fff", fontSize: 16, fontWeight: 800, minWidth: 0, textAlign: "center" }}>
-              {liveMatch.awayTeam}
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mt-4 w-full rounded-full py-3 inline-flex items-center justify-center gap-2"
-            style={{
-              border: "1px solid rgba(174,228,24,0.45)",
-              background: "linear-gradient(90deg, rgba(106,140,0,0.4), rgba(140,190,0,0.32), rgba(106,140,0,0.4))",
-              color: "#C8FF00",
-              fontSize: 16,
-              fontWeight: 900,
-            }}
-          >
-            <Zap size={18} /> {expanded ? "CANLI OYU GIZLE" : "CANLI OY VER"}
-          </button>
-
-          <AnimatePresence initial={false}>
-            {expanded && (
+        {displayMatches.length > 0 ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            {displayMatches.map((card, idx) => (
               <motion.div
-                key="vote-panel"
-                initial={{ height: 0, opacity: 0, marginTop: 0 }}
-                animate={{ height: "auto", opacity: 1, marginTop: 14 }}
-                exit={{ height: 0, opacity: 0, marginTop: 0 }}
-                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                style={{ overflow: "hidden" }}
+                key={card.id}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.25, delay: idx * 0.05 }}
+                className="rounded-[30px] p-4"
+                style={{
+                  border: "1px solid rgba(174,228,24,0.36)",
+                  background:
+                    "linear-gradient(145deg, rgba(108,148,0,0.2), rgba(18,21,32,0.94) 68%)",
+                  boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.03)",
+                }}
               >
+                <div className="flex items-center justify-between mb-3">
+                  <span style={{ color: "#D6FF5D", fontSize: 13, fontWeight: 800 }}>{card.league}</span>
+                  <span
+                    style={{
+                      color: card.isLive ? "#FF5D66" : "#9FB1CF",
+                      fontSize: 13,
+                      fontWeight: 900,
+                    }}
+                  >
+                    • {card.statusLabel}
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ color: "#fff", fontSize: 16, fontWeight: 800, minWidth: 0, textAlign: "center" }}>
+                    {card.homeTeam}
+                  </div>
+                  <div
+                    className="rounded-[20px] px-4 py-2"
+                    style={{
+                      border: "1px solid rgba(174,228,24,0.4)",
+                      background: "rgba(128,170,0,0.18)",
+                      color: "#C8FF00",
+                      fontSize: card.isLive ? 30 : 16,
+                      lineHeight: 1,
+                      fontWeight: 900,
+                      minWidth: card.isLive ? undefined : 128,
+                      textAlign: "center",
+                    }}
+                  >
+                    {card.isLive ? `${card.homeScore}-${card.awayScore}` : card.countdownLabel}
+                  </div>
+                  <div style={{ color: "#fff", fontSize: 16, fontWeight: 800, minWidth: 0, textAlign: "center" }}>
+                    {card.awayTeam}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedMatchId((prev) => (prev === card.id ? null : card.id))
+                  }
+                  className="mt-4 w-full rounded-full py-3 inline-flex items-center justify-center gap-2"
+                  style={{
+                    border: "1px solid rgba(174,228,24,0.45)",
+                    background: "linear-gradient(90deg, rgba(106,140,0,0.4), rgba(140,190,0,0.32), rgba(106,140,0,0.4))",
+                    color: "#C8FF00",
+                    fontSize: 16,
+                    fontWeight: 900,
+                  }}
+                >
+                  <Zap size={18} /> {expandedMatchId === card.id ? "CANLI OYU GIZLE" : "CANLI OY VER"}
+                </button>
+
+                <AnimatePresence initial={false}>
+                  {expandedMatchId === card.id && (
+                    <motion.div
+                      key={`vote-panel-${card.id}`}
+                      initial={{ height: 0, opacity: 0, marginTop: 0 }}
+                      animate={{ height: "auto", opacity: 1, marginTop: 14 }}
+                      exit={{ height: 0, opacity: 0, marginTop: 0 }}
+                      transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                      style={{ overflow: "hidden" }}
+                    >
                 <div
                   className="rounded-2xl p-3"
                   style={{
@@ -401,7 +610,7 @@ export function Home() {
                       Topluluk: {communityStats.totalVotes} oy
                       {communityStats.average !== null ? ` · Ort. ${communityStats.average.toFixed(1)}` : ""}
                       <br />
-                      Sen: {votedCount}/{incidents.length}
+                      Sen: {votedCount}/{liveIncidentKeys.length}
                       {myAverageScore !== null ? ` · Ort. ${myAverageScore.toFixed(1)}` : ""}
                     </div>
                   </div>
@@ -424,11 +633,18 @@ export function Home() {
                     <div style={{ color: "#8EA0BE", fontSize: 11 }}>Topluluk oyları yükleniyor...</div>
                   )}
 
-                  {incidents.map((item) => {
+                  {liveNowIncidents.length === 0 && (
+                    <div style={{ color: "#8EA0BE", fontSize: 11 }}>
+                      Bu maç için canlı olay verisi henüz gelmedi.
+                    </div>
+                  )}
+
+                  {liveNowIncidents.map((item) => {
+                    const incidentKey = `${card.id}:${item.id}`;
                     const badge = incidentBadge(item.type);
-                    const selected = votes[item.id];
+                    const selected = votes[incidentKey];
                     const selectedMeta = scoreMeta(selected);
-                    const incidentStats = statsByIncident[item.id] || EMPTY_STAT;
+                    const incidentStats = statsByIncident[incidentKey] || EMPTY_STAT;
 
                     return (
                       <div
@@ -493,8 +709,8 @@ export function Home() {
                               <button
                                 key={score}
                                 type="button"
-                                onClick={() => setVote(item.id, score)}
-                                disabled={syncingIncidentId === item.id}
+                                onClick={() => setVote(incidentKey, score)}
+                                disabled={syncingIncidentId === incidentKey}
                                 className="rounded-lg py-1.5"
                                 style={{
                                   border: isActive
@@ -504,7 +720,7 @@ export function Home() {
                                   color: isActive ? "#fff" : "#8E99B3",
                                   fontSize: 11,
                                   fontWeight: 800,
-                                  opacity: syncingIncidentId === item.id ? 0.7 : 1,
+                                  opacity: syncingIncidentId === incidentKey ? 0.7 : 1,
                                 }}
                               >
                                 {score}
@@ -517,9 +733,25 @@ export function Home() {
                   })}
                 </div>
               </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
+              )}
+            </AnimatePresence>
+              </motion.div>
+            ))}
+          </div>
+        ) : (
+          <div
+            className="rounded-[30px] p-5"
+            style={{
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(18,21,32,0.7)",
+              color: "#8EA0BE",
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            Şu anda canlı maç verisi bulunamadı.
+          </div>
+        )}
       </div>
     </div>
   );

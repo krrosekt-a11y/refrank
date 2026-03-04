@@ -4,10 +4,17 @@ import { Plugin } from "vite";
 const DB_PATH = "/Users/aliozkan/RefereeRank/data/tff_referees_matches_full.db";
 const API_BASE = "https://v3.football.api-sports.io";
 const API_KEY = process.env.API_FOOTBALL_KEY || "05652682d958d809537421005dc43c04";
+const SPORTMONKS_BASE = "https://api.sportmonks.com/v3/football";
+const SPORTMONKS_API_TOKEN =
+  process.env.SPORTMONKS_API_TOKEN ||
+  "LiOY8DpTHVkbyzwbpo3qc7Z3YIhrRdoDRFM09Zf7jOzYKkgo380pCNGag6vX";
 const RAPID_FOOTBALL_BASE = "https://free-api-live-football-data.p.rapidapi.com";
 const RAPID_FOOTBALL_HOST = "free-api-live-football-data.p.rapidapi.com";
 const RAPID_FOOTBALL_KEY = process.env.RAPIDAPI_FOOTBALL_KEY || "a2fc7f1f3fmshdd830e569832886p182d50jsn91c6b18a6ba1";
 const UPCOMING_CACHE_TTL_SEC = 3600;
+const SPORTMONKS_WEEK_CACHE_TTL_SEC = 6 * 3600;
+const SPORTMONKS_EVENT_CACHE_TTL_SEC = 3 * 60;
+const SPORTMONKS_LIVE_NOW_CACHE_TTL_SEC = 3 * 60;
 
 type Row = Record<string, unknown>;
 
@@ -149,6 +156,63 @@ function ensureMlSchema() {
   `);
 }
 
+function ensureSportmonksCacheSchema() {
+  runSqlExec(`
+    CREATE TABLE IF NOT EXISTS sportmonks_week_fixtures_cache (
+      week_number INTEGER NOT NULL,
+      fixture_id INTEGER NOT NULL,
+      date TEXT,
+      league_name TEXT,
+      round_name TEXT,
+      home_team TEXT,
+      away_team TEXT,
+      referee TEXT,
+      status TEXT,
+      score TEXT,
+      venue TEXT,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (week_number, fixture_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sm_week_fetched_at
+      ON sportmonks_week_fixtures_cache (week_number, fetched_at);
+
+    CREATE TABLE IF NOT EXISTS sportmonks_fixture_events_cache (
+      fixture_id INTEGER NOT NULL,
+      event_id TEXT NOT NULL,
+      minute INTEGER,
+      extra_minute INTEGER,
+      type_name TEXT,
+      team_name TEXT,
+      player_name TEXT,
+      related_player_name TEXT,
+      result_text TEXT,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (fixture_id, event_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sm_events_fixture_fetched_at
+      ON sportmonks_fixture_events_cache (fixture_id, fetched_at);
+
+    CREATE TABLE IF NOT EXISTS sportmonks_live_now_cache (
+      cache_id INTEGER PRIMARY KEY CHECK (cache_id = 1),
+      fixture_id INTEGER,
+      payload_json TEXT,
+      fetched_at TEXT NOT NULL
+    );
+  `);
+  const cols = runSql<{ name: string }>("PRAGMA table_info(sportmonks_fixture_events_cache);").map((c) =>
+    String(c.name || "")
+  );
+  if (!cols.includes("related_player_name")) {
+    runSqlExec("ALTER TABLE sportmonks_fixture_events_cache ADD COLUMN related_player_name TEXT;");
+  }
+}
+
+function cacheAgeSec(isoDate: string): number {
+  const ms = new Date(isoDate).getTime();
+  if (!Number.isFinite(ms)) return Number.POSITIVE_INFINITY;
+  return Math.floor((Date.now() - ms) / 1000);
+}
+
 function clampWeights(weights: FactorWeights): FactorWeights {
   const floor = 0.03;
   const capped: FactorWeights = {
@@ -266,6 +330,134 @@ function writeUpcomingCache(cacheKey: string, data: UpcomingFixture[], fetchedAt
   runSqlExec(`
     DELETE FROM upcoming_fixtures_cache
     WHERE fetched_at < datetime('now', '-3 day');
+  `);
+}
+
+function readSportmonksWeekCache(week: number): { fetchedAt: string; data: SportmonksWeekFixture[] } | null {
+  const rows = runSql<any>(`
+    SELECT
+      fixture_id, date, league_name, round_name, home_team, away_team,
+      referee, status, score, venue, fetched_at
+    FROM sportmonks_week_fixtures_cache
+    WHERE week_number=${Math.trunc(week)}
+    ORDER BY date ASC, fixture_id ASC;
+  `);
+  if (!rows.length) return null;
+  const fetchedAt = String(rows[0].fetched_at || "");
+  if (!fetchedAt) return null;
+  const data = rows.map((r) => ({
+    fixture_id: n(r.fixture_id),
+    date: String(r.date || ""),
+    league_name: String(r.league_name || ""),
+    round: String(r.round_name || ""),
+    home_team: String(r.home_team || ""),
+    away_team: String(r.away_team || ""),
+    referee: String(r.referee || ""),
+    status: String(r.status || ""),
+    score: String(r.score || ""),
+    venue: String(r.venue || ""),
+  })) as SportmonksWeekFixture[];
+  return { fetchedAt, data };
+}
+
+function writeSportmonksWeekCache(week: number, data: SportmonksWeekFixture[], fetchedAt: string): void {
+  runSqlExec(`DELETE FROM sportmonks_week_fixtures_cache WHERE week_number=${Math.trunc(week)};`);
+  for (const f of data) {
+    runSqlExec(`
+      INSERT OR REPLACE INTO sportmonks_week_fixtures_cache (
+        week_number, fixture_id, date, league_name, round_name,
+        home_team, away_team, referee, status, score, venue, fetched_at
+      ) VALUES (
+        ${Math.trunc(week)},
+        ${n(f.fixture_id)},
+        '${esc(String(f.date || ""))}',
+        '${esc(String(f.league_name || ""))}',
+        '${esc(String(f.round || ""))}',
+        '${esc(String(f.home_team || ""))}',
+        '${esc(String(f.away_team || ""))}',
+        '${esc(String(f.referee || ""))}',
+        '${esc(String(f.status || ""))}',
+        '${esc(String(f.score || ""))}',
+        '${esc(String(f.venue || ""))}',
+        '${esc(fetchedAt)}'
+      );
+    `);
+  }
+}
+
+function readSportmonksFixtureEventsCache(fixtureId: number): { fetchedAt: string; data: SportmonksDecisionEvent[] } | null {
+  const rows = runSql<any>(`
+    SELECT
+      event_id, minute, extra_minute, type_name, team_name, player_name, related_player_name, result_text, fetched_at
+    FROM sportmonks_fixture_events_cache
+    WHERE fixture_id=${Math.trunc(fixtureId)}
+    ORDER BY minute DESC, extra_minute DESC, event_id DESC;
+  `);
+  if (!rows.length) return null;
+  const fetchedAt = String(rows[0].fetched_at || "");
+  if (!fetchedAt) return null;
+  const data = rows.map((r) => ({
+    id: String(r.event_id || ""),
+    minute: n(r.minute),
+    extra_minute: n(r.extra_minute),
+    type: String(r.type_name || ""),
+    team: String(r.team_name || ""),
+    player: String(r.player_name || ""),
+    related_player: String(r.related_player_name || ""),
+    result: String(r.result_text || ""),
+  })) as SportmonksDecisionEvent[];
+  return { fetchedAt, data };
+}
+
+function writeSportmonksFixtureEventsCache(fixtureId: number, data: SportmonksDecisionEvent[], fetchedAt: string): void {
+  runSqlExec(`DELETE FROM sportmonks_fixture_events_cache WHERE fixture_id=${Math.trunc(fixtureId)};`);
+  for (const e of data) {
+    runSqlExec(`
+      INSERT OR REPLACE INTO sportmonks_fixture_events_cache (
+        fixture_id, event_id, minute, extra_minute, type_name, team_name, player_name, related_player_name, result_text, fetched_at
+      ) VALUES (
+        ${Math.trunc(fixtureId)},
+        '${esc(String(e.id || ""))}',
+        ${n(e.minute)},
+        ${n(e.extra_minute)},
+        '${esc(String(e.type || ""))}',
+        '${esc(String(e.team || ""))}',
+        '${esc(String(e.player || ""))}',
+        '${esc(String(e.related_player || ""))}',
+        '${esc(String(e.result || ""))}',
+        '${esc(fetchedAt)}'
+      );
+    `);
+  }
+}
+
+function readSportmonksLiveNowCache(): { fetchedAt: string; data: LiveNowFixture | null } | null {
+  const row = runSql<any>(`
+    SELECT payload_json, fetched_at
+    FROM sportmonks_live_now_cache
+    WHERE cache_id=1
+    LIMIT 1;
+  `)[0];
+  if (!row) return null;
+  const fetchedAt = String(row.fetched_at || "");
+  if (!fetchedAt) return null;
+  try {
+    const parsed = row.payload_json ? (JSON.parse(String(row.payload_json)) as LiveNowFixture | null) : null;
+    return { fetchedAt, data: parsed };
+  } catch {
+    return { fetchedAt, data: null };
+  }
+}
+
+function writeSportmonksLiveNowCache(data: LiveNowFixture | null, fetchedAt: string): void {
+  const payload = esc(JSON.stringify(data));
+  runSqlExec(`
+    INSERT INTO sportmonks_live_now_cache (cache_id, fixture_id, payload_json, fetched_at)
+    VALUES (1, ${data ? Math.trunc(data.fixture_id) : "NULL"}, '${payload}', '${esc(fetchedAt)}')
+    ON CONFLICT(cache_id) DO UPDATE SET
+      fixture_id=excluded.fixture_id,
+      payload_json=excluded.payload_json,
+      fetched_at=excluded.fetched_at;
   `);
 }
 
@@ -967,6 +1159,449 @@ async function fetchRapidFallbackUpcoming(days: number): Promise<UpcomingFixture
   return all;
 }
 
+type SportmonksDecisionEvent = {
+  id: string;
+  minute: number;
+  extra_minute: number;
+  type: string;
+  team: string;
+  player: string;
+  related_player: string;
+  result: string;
+};
+
+type SportmonksWeekFixture = {
+  fixture_id: number;
+  date: string;
+  league_name: string;
+  round: string;
+  home_team: string;
+  away_team: string;
+  referee: string;
+  status: string;
+  score: string;
+  venue: string;
+};
+
+type LiveNowFixture = {
+  fixture_id: number;
+  date: string;
+  league_name: string;
+  round: string;
+  home_team: string;
+  away_team: string;
+  status: string;
+  minute: number;
+  score: string;
+};
+
+function fixtureParticipantsHomeAway(fixture: any): { home: string; away: string } {
+  const parts = Array.isArray(fixture?.participants) ? fixture.participants : [];
+  let home = "";
+  let away = "";
+  for (const p of parts) {
+    const loc = String(p?.meta?.location || p?.location || "").toLowerCase();
+    const name = String(p?.name || p?.display_name || "");
+    if (!name) continue;
+    if (loc === "home" && !home) home = name;
+    else if (loc === "away" && !away) away = name;
+  }
+  if (!home && parts[0]?.name) home = String(parts[0].name);
+  if (!away && parts[1]?.name) away = String(parts[1].name);
+  return { home: canonicalTeamName(home), away: canonicalTeamName(away) };
+}
+
+function teamMatchKey(name: string): string {
+  return teamCodeFromName(canonicalTeamName(name));
+}
+
+function toYmd(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function appendApiToken(url: string): string {
+  if (!SPORTMONKS_API_TOKEN) return url;
+  if (url.includes("api_token=")) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}api_token=${encodeURIComponent(SPORTMONKS_API_TOKEN)}`;
+}
+
+function normalizeLeagueKey(name: string): string {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/ü/g, "u")
+    .replace(/ı/g, "i")
+    .replace(/ş/g, "s")
+    .replace(/ç/g, "c")
+    .replace(/ö/g, "o")
+    .replace(/ğ/g, "g")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isTurkeySuperLig(leagueName: string): boolean {
+  const n = normalizeLeagueKey(leagueName);
+  return n.includes("super lig") || n.includes("super league turkey");
+}
+
+async function fetchSportmonksFixturesBetweenPaged(fromYmd: string, toYmd: string, include: string): Promise<any[]> {
+  if (!SPORTMONKS_API_TOKEN) return [];
+  let url =
+    `${SPORTMONKS_BASE}/fixtures/between/${fromYmd}/${toYmd}` +
+    `?api_token=${encodeURIComponent(SPORTMONKS_API_TOKEN)}` +
+    `&include=${encodeURIComponent(include)}`;
+  const out: any[] = [];
+  for (let i = 0; i < 50; i++) {
+    const r = await fetch(url);
+    if (!r.ok) break;
+    const j = await r.json();
+    const rows = Array.isArray(j?.data) ? j.data : [];
+    out.push(...rows);
+    const hasMore = Boolean(j?.pagination?.has_more);
+    const nextPage = String(j?.pagination?.next_page || "");
+    if (!hasMore || !nextPage) break;
+    url = appendApiToken(nextPage);
+  }
+  return out;
+}
+
+async function fetchSportmonksFixtureEventsById(fixtureId: number): Promise<SportmonksDecisionEvent[]> {
+  if (!SPORTMONKS_API_TOKEN || !Number.isFinite(fixtureId) || fixtureId <= 0) return [];
+  const url =
+    `${SPORTMONKS_BASE}/fixtures/${Math.trunc(fixtureId)}` +
+    `?api_token=${encodeURIComponent(SPORTMONKS_API_TOKEN)}` +
+    `&include=participants;events.type;events.player;events.relatedplayer;events.participant`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const j = await r.json();
+  const fx = j?.data || {};
+  const events = Array.isArray(fx?.events) ? fx.events : [];
+  return events
+    .map((e: any, idx: number): SportmonksDecisionEvent => ({
+      id: String(e?.id || `sm-${idx}`),
+      minute: Number(e?.minute || 0),
+      extra_minute: Number(e?.extra_minute || 0),
+      type: String(e?.type?.name || e?.type?.developer_name || "Olay"),
+      team: canonicalTeamName(String(e?.participant?.name || e?.team?.name || "")),
+      player: String(e?.player_name || e?.player?.display_name || e?.player?.name || ""),
+      related_player: String(e?.related_player_name || e?.relatedplayer?.display_name || e?.relatedplayer?.name || ""),
+      result: String(e?.info || e?.addition || e?.result || ""),
+    }))
+    .filter((e: SportmonksDecisionEvent) => !!e.type);
+}
+
+async function fetchSportmonksMatchEvents(home: string, away: string, dateRaw: string): Promise<SportmonksDecisionEvent[]> {
+  if (!SPORTMONKS_API_TOKEN) return [];
+  const input = String(dateRaw || "").trim();
+  let d: Date | null = null;
+  const iso = input.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s*[-T ]\s*(\d{2}):(\d{2}))?/);
+  if (iso) {
+    d = new Date(`${iso[1]}-${iso[2]}-${iso[3]}T${iso[4] || "12"}:${iso[5] || "00"}:00`);
+  } else {
+    const trDot = input.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s*-\s*(\d{2}):(\d{2}))?/);
+    if (trDot) {
+      d = new Date(
+        `${trDot[3]}-${trDot[2].padStart(2, "0")}-${trDot[1].padStart(2, "0")}T${trDot[4] || "12"}:${trDot[5] || "00"}:00`,
+      );
+    }
+  }
+  if (!d) d = new Date(input.replace(" - ", " "));
+  if (Number.isNaN(d.getTime())) return [];
+  const from = new Date(d);
+  from.setDate(from.getDate() - 3);
+  const to = new Date(d);
+  to.setDate(to.getDate() + 3);
+  const fromYmd = from.toISOString().slice(0, 10);
+  const toYmd = to.toISOString().slice(0, 10);
+  const fixtures = await fetchSportmonksFixturesBetweenPaged(
+    fromYmd,
+    toYmd,
+    "participants;events.type;events.player;events.relatedplayer;events.participant",
+  );
+  if (!fixtures.length) return [];
+
+  const homeKey = teamMatchKey(home);
+  const awayKey = teamMatchKey(away);
+  const exact = fixtures.find((fx: any) => {
+    const p = fixtureParticipantsHomeAway(fx);
+    return teamMatchKey(p.home) === homeKey && teamMatchKey(p.away) === awayKey;
+  });
+  const fallback = fixtures.find((fx: any) => {
+    const p = fixtureParticipantsHomeAway(fx);
+    const h = teamMatchKey(p.home);
+    const a = teamMatchKey(p.away);
+    return (h === homeKey && a === awayKey) || (h === awayKey && a === homeKey);
+  });
+  const selected = exact || fallback;
+  if (!selected) return [];
+
+  const events = Array.isArray(selected?.events) ? selected.events : [];
+  return events
+    .map((e: any, idx: number): SportmonksDecisionEvent => ({
+      id: String(e?.id || `sm-${idx}`),
+      minute: Number(e?.minute || 0),
+      extra_minute: Number(e?.extra_minute || 0),
+      type: String(e?.type?.name || e?.type?.developer_name || "Olay"),
+      team: canonicalTeamName(String(e?.participant?.name || e?.team?.name || "")),
+      player: String(e?.player_name || e?.player?.display_name || e?.player?.name || ""),
+      related_player: String(e?.related_player_name || e?.relatedplayer?.display_name || e?.relatedplayer?.name || ""),
+      result: String(e?.info || e?.addition || e?.result_info || ""),
+    }))
+    .filter((e: SportmonksDecisionEvent) => !!e.type);
+}
+
+function scoreFromSportmonksFixture(fx: any): string {
+  const scores = Array.isArray(fx?.scores) ? fx.scores : [];
+  const ft = scores.find((s: any) => String(s?.description || "").toLowerCase().includes("final"));
+  const scoreObj = ft || scores[0];
+  const home = Number(scoreObj?.score?.participant || scoreObj?.score?.home || scoreObj?.home_score);
+  const away = Number(scoreObj?.score?.opponent || scoreObj?.score?.away || scoreObj?.away_score);
+  if (Number.isFinite(home) && Number.isFinite(away)) return `${home}-${away}`;
+  return "";
+}
+
+function isSportmonksLiveState(stateShortRaw: string, stateNameRaw: string): boolean {
+  const s = String(stateShortRaw || "").toUpperCase();
+  const n = String(stateNameRaw || "").toLowerCase();
+  if (["FT", "AET", "PEN", "FINISHED", "ENDED"].includes(s)) return false;
+  if (n.includes("finished") || n.includes("after extra time") || n.includes("fulltime")) return false;
+  if (["LIVE", "HT", "1H", "2H", "ET", "BT", "PEN_LIVE", "INT", "BREAK", "INPLAY"].includes(s)) {
+    return true;
+  }
+  return (
+    n.includes("live") ||
+    n.includes("inplay") ||
+    n.includes("1st half") ||
+    n.includes("2nd half") ||
+    n.includes("extra time") ||
+    n.includes("halftime")
+  );
+}
+
+function scoreFromSportmonksLiveFixture(fx: any): string {
+  const scores = Array.isArray(fx?.scores) ? fx.scores : [];
+  const preferred = scores.find((s: any) => {
+    const d = String(s?.description || "").toLowerCase();
+    return d.includes("current") || d.includes("live") || d.includes("1st") || d.includes("2nd");
+  });
+  const scoreObj = preferred || scores[0];
+  const home = Number(scoreObj?.score?.participant || scoreObj?.score?.home || scoreObj?.home_score);
+  const away = Number(scoreObj?.score?.opponent || scoreObj?.score?.away || scoreObj?.away_score);
+  if (Number.isFinite(home) && Number.isFinite(away)) return `${home}-${away}`;
+  return scoreFromSportmonksFixture(fx);
+}
+
+async function fetchSportmonksLiveNowAnyLeague(): Promise<LiveNowFixture | null> {
+  if (!SPORTMONKS_API_TOKEN) return null;
+  const from = new Date();
+  const to = new Date();
+  from.setDate(from.getDate() - 1);
+  to.setDate(to.getDate() + 1);
+
+  const fixtures = await fetchSportmonksFixturesBetweenPaged(
+    toYmd(from),
+    toYmd(to),
+    "participants;league;stage;round;state;scores;venue",
+  );
+  if (!fixtures.length) return null;
+
+  const liveRows = fixtures
+    .filter((fx: any) =>
+      isSportmonksLiveState(String(fx?.state?.short_name || ""), String(fx?.state?.name || "")),
+    )
+    .map((fx: any) => {
+      const p = fixtureParticipantsHomeAway(fx);
+      return {
+        fixture_id: Number(fx?.id || 0),
+        date: String(fx?.starting_at || fx?.date || "").slice(0, 16).replace("T", " "),
+        league_name: String(fx?.league?.name || "Canlı Lig"),
+        round: String(fx?.round?.name || fx?.stage?.name || ""),
+        home_team: p.home,
+        away_team: p.away,
+        status: String(fx?.state?.short_name || fx?.state?.name || "LIVE"),
+        minute: Number(fx?.state?.minute || fx?.time?.minute || 0),
+        score: scoreFromSportmonksLiveFixture(fx),
+      } satisfies LiveNowFixture;
+    })
+    .filter((fx) => fx.fixture_id > 0);
+
+  if (!liveRows.length) return null;
+  liveRows.sort((a, b) => {
+    const da = new Date(String(a.date || "").replace(" ", "T")).getTime();
+    const db = new Date(String(b.date || "").replace(" ", "T")).getTime();
+    return db - da;
+  });
+  return liveRows[0];
+}
+
+async function fetchSportmonksSuperLigWeekFixtures(week: number): Promise<SportmonksWeekFixture[]> {
+  if (!SPORTMONKS_API_TOKEN) return [];
+  const now = new Date();
+  const seasonStartYear = now.getMonth() + 1 >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+  const seasonStart = new Date(Date.UTC(seasonStartYear, 6, 1));
+  const seasonEnd = new Date(Date.UTC(seasonStartYear + 1, 5, 30));
+  const ranges: Array<{ from: string; to: string }> = [];
+  let cursor = new Date(seasonStart);
+  while (cursor <= seasonEnd) {
+    const end = new Date(cursor);
+    end.setUTCDate(end.getUTCDate() + 99);
+    if (end > seasonEnd) end.setTime(seasonEnd.getTime());
+    ranges.push({ from: toYmd(cursor), to: toYmd(end) });
+    cursor = new Date(end);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  const fixtures: any[] = [];
+  for (const r of ranges) {
+    const part = await fetchSportmonksFixturesBetweenPaged(
+      r.from,
+      r.to,
+      "participants;league;stage;round;state;scores;venue",
+    );
+    fixtures.push(...part);
+  }
+
+  const out: SportmonksWeekFixture[] = [];
+  for (const fx of fixtures) {
+    const leagueName = String(fx?.league?.name || fx?.league?.data?.name || "");
+    if (!isTurkeySuperLig(leagueName)) continue;
+    const roundTxt =
+      String(fx?.round?.name || fx?.stage?.name || fx?.stage?.data?.name || fx?.name || "");
+    const m = roundTxt.match(/(\d{1,2})/);
+    const weekNum = m ? Number(m[1]) : null;
+    if (weekNum !== week) continue;
+    const p = fixtureParticipantsHomeAway(fx);
+    const status = String(fx?.state?.short_name || fx?.state?.name || "");
+    out.push({
+      fixture_id: Number(fx?.id || 0),
+      date: String(fx?.starting_at || fx?.date || "").slice(0, 16).replace("T", " "),
+      league_name: leagueName || "Trendyol Süper Lig",
+      round: roundTxt || `${week}. Hafta`,
+      home_team: p.home,
+      away_team: p.away,
+      referee: String(fx?.referee?.name || ""),
+      status,
+      score: scoreFromSportmonksFixture(fx),
+      venue: String(fx?.venue?.name || ""),
+    });
+  }
+
+  out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return out;
+}
+
+async function fetchSportmonksUpcoming(days: number): Promise<UpcomingFixture[]> {
+  if (!SPORTMONKS_API_TOKEN) return [];
+  const from = new Date();
+  const to = new Date();
+  to.setDate(to.getDate() + Math.max(1, days) + 1);
+  const fixtures = await fetchSportmonksFixturesBetweenPaged(
+    toYmd(from),
+    toYmd(to),
+    "participants;league;stage;round;state;scores;venue",
+  );
+  const nowTs = Date.now();
+  const out: UpcomingFixture[] = [];
+  for (const fx of fixtures) {
+    const leagueName = String(fx?.league?.name || "");
+    if (!isTurkeySuperLig(leagueName)) continue;
+    const statusShort = String(fx?.state?.short_name || fx?.state?.state || "").toUpperCase();
+    const dateRaw = String(fx?.starting_at || "").slice(0, 16).replace("T", " ");
+    const dt = new Date(String(dateRaw || "").replace(" ", "T"));
+    if (Number.isNaN(dt.getTime()) || dt.getTime() < nowTs - 10 * 60 * 1000) continue;
+    if (!isUpcomingStatus(statusShort) && !["NS", "TBD", "POSTPONED", "PST"].includes(statusShort)) continue;
+    const p = fixtureParticipantsHomeAway(fx);
+    const round = String(fx?.round?.name || fx?.stage?.name || "");
+    out.push({
+      fixture_id: n(fx?.id),
+      date: dateRaw,
+      referee: "",
+      referee_is_estimated: false,
+      referee_confidence: 0,
+      league_id: n(fx?.league_id || fx?.league?.id),
+      league_name: leagueName || "Trendyol Süper Lig",
+      round,
+      home_team: p.home,
+      away_team: p.away,
+      status: statusShort || "NS",
+    });
+  }
+  out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return out;
+}
+
+async function getSportmonksWeekFixturesCached(week: number): Promise<{ data: SportmonksWeekFixture[]; source: string; fetchedAt: string; stale?: boolean }> {
+  ensureSportmonksCacheSchema();
+  const cached = readSportmonksWeekCache(week);
+  if (cached) {
+    const age = cacheAgeSec(cached.fetchedAt);
+    if (age >= 0 && age < SPORTMONKS_WEEK_CACHE_TTL_SEC) {
+      return { data: cached.data, source: "sportmonks-cache", fetchedAt: cached.fetchedAt };
+    }
+  }
+
+  try {
+    const live = await fetchSportmonksSuperLigWeekFixtures(week);
+    const nowIso = new Date().toISOString();
+    writeSportmonksWeekCache(week, live, nowIso);
+    return { data: live, source: "sportmonks-live", fetchedAt: nowIso };
+  } catch {
+    if (cached) {
+      return { data: cached.data, source: "sportmonks-cache", fetchedAt: cached.fetchedAt, stale: true };
+    }
+    return { data: [], source: "sportmonks-live", fetchedAt: new Date().toISOString(), stale: true };
+  }
+}
+
+async function getSportmonksFixtureEventsCached(fixtureId: number): Promise<{ data: SportmonksDecisionEvent[]; source: string; fetchedAt: string; stale?: boolean }> {
+  ensureSportmonksCacheSchema();
+  const cached = readSportmonksFixtureEventsCache(fixtureId);
+  if (cached) {
+    const age = cacheAgeSec(cached.fetchedAt);
+    if (age >= 0 && age < SPORTMONKS_EVENT_CACHE_TTL_SEC) {
+      return { data: cached.data, source: "sportmonks-cache", fetchedAt: cached.fetchedAt };
+    }
+  }
+  try {
+    const live = await fetchSportmonksFixtureEventsById(fixtureId);
+    const nowIso = new Date().toISOString();
+    writeSportmonksFixtureEventsCache(fixtureId, live, nowIso);
+    return { data: live, source: "sportmonks-live", fetchedAt: nowIso };
+  } catch {
+    if (cached) {
+      return { data: cached.data, source: "sportmonks-cache", fetchedAt: cached.fetchedAt, stale: true };
+    }
+    return { data: [], source: "sportmonks-live", fetchedAt: new Date().toISOString(), stale: true };
+  }
+}
+
+async function getSportmonksLiveNowCached(): Promise<{
+  data: LiveNowFixture | null;
+  source: string;
+  fetchedAt: string;
+  stale?: boolean;
+}> {
+  ensureSportmonksCacheSchema();
+  const cached = readSportmonksLiveNowCache();
+  if (cached) {
+    const age = cacheAgeSec(cached.fetchedAt);
+    if (age >= 0 && age < SPORTMONKS_LIVE_NOW_CACHE_TTL_SEC) {
+      return { data: cached.data, source: "sportmonks-live-cache", fetchedAt: cached.fetchedAt };
+    }
+  }
+
+  try {
+    const live = await fetchSportmonksLiveNowAnyLeague();
+    const nowIso = new Date().toISOString();
+    writeSportmonksLiveNowCache(live, nowIso);
+    return { data: live, source: "sportmonks-live", fetchedAt: nowIso };
+  } catch {
+    if (cached) {
+      return { data: cached.data, source: "sportmonks-live-cache", fetchedAt: cached.fetchedAt, stale: true };
+    }
+    return { data: null, source: "sportmonks-live", fetchedAt: new Date().toISOString(), stale: true };
+  }
+}
+
 type OfficialFixture = {
   fixture_id: number;
   home_team: string;
@@ -1125,6 +1760,7 @@ export function localDbApiPlugin(): Plugin {
           }
           ensureFixtureWeekSchema();
           ensureApiFootballFoulSchema();
+          ensureSportmonksCacheSchema();
 
           if (u.pathname === "/api/localdb/health") {
             sendJson(res, { ok: true });
@@ -1176,7 +1812,7 @@ export function localDbApiPlugin(): Plugin {
             `);
 
             const data = rows.map((r) => {
-              const matches = n(r.matches) || n(r.total_matches);
+              const matches = n(r.matches);
               const yellow = n(r.yellow_cards);
               const red = n(r.red_cards);
               const syr = n(r.second_yellow_red_cards);
@@ -1275,7 +1911,7 @@ export function localDbApiPlugin(): Plugin {
               })
               .reverse();
 
-            const matches = n(row.matches) || n(row.total_matches);
+            const matches = n(row.matches);
             const yellow = n(row.yellow_cards);
             const red = n(row.red_cards);
             const syr = n(row.second_yellow_red_cards);
@@ -1492,16 +2128,23 @@ export function localDbApiPlugin(): Plugin {
             const cached = readUpcomingCache(cacheKey);
             if (cached?.fetchedAt) {
               const ageSec = Math.floor((Date.now() - new Date(cached.fetchedAt).getTime()) / 1000);
-              if (!Number.isNaN(ageSec) && ageSec >= 0 && ageSec < UPCOMING_CACHE_TTL_SEC) {
-                sendJson(res, { data: cached.data.slice(0, 40), source: "cache", cached: true, fetched_at: cached.fetchedAt });
+              if (cached.data.length > 0) {
+                sendJson(res, {
+                  data: cached.data.slice(0, 40),
+                  source: "cache",
+                  cached: true,
+                  fetched_at: cached.fetchedAt,
+                  stale: Number.isNaN(ageSec) || ageSec < 0 ? false : ageSec >= UPCOMING_CACHE_TTL_SEC,
+                });
                 return;
               }
             }
 
-            const primary = await fetchApiFootballUpcoming(days);
-            const rapid = primary.length < 8 ? await fetchRapidFallbackUpcoming(days) : [];
+            const sportmonks = await fetchSportmonksUpcoming(days);
+            const primary = sportmonks.length ? [] : await fetchApiFootballUpcoming(days);
+            const rapid = sportmonks.length || primary.length >= 8 ? [] : await fetchRapidFallbackUpcoming(days);
             const seen = new Set<number>();
-            const merged = [...primary, ...rapid].filter((x) => {
+            const merged = [...sportmonks, ...primary, ...rapid].filter((x) => {
               if (!x.fixture_id) return false;
               if (seen.has(x.fixture_id)) return false;
               seen.add(x.fixture_id);
@@ -1588,7 +2231,9 @@ export function localDbApiPlugin(): Plugin {
             persistPredictionsForLearning(predictionSnapshots);
             withReferee.sort((a, b) => String(a.date).localeCompare(String(b.date)));
             const source =
-              primary.length && rapid.length
+              sportmonks.length
+                ? "sportmonks"
+                : primary.length && rapid.length
                 ? "api-football+rapidapi"
                 : primary.length
                   ? "api-football"
@@ -1596,8 +2241,59 @@ export function localDbApiPlugin(): Plugin {
                     ? "rapidapi"
                     : "none";
             const nowIso = new Date().toISOString();
-            writeUpcomingCache(cacheKey, withReferee, nowIso);
+            if (withReferee.length > 0) {
+              writeUpcomingCache(cacheKey, withReferee, nowIso);
+            }
             sendJson(res, { data: withReferee.slice(0, 40), source, cached: false, fetched_at: nowIso });
+            return;
+          }
+
+          if (u.pathname === "/api/localdb/match-events") {
+            const fixtureId = Number(u.searchParams.get("fixture_id") || 0);
+            const home = String(u.searchParams.get("home") || "");
+            const away = String(u.searchParams.get("away") || "");
+            const date = String(u.searchParams.get("date") || "");
+            if (fixtureId > 0) {
+              const result = await getSportmonksFixtureEventsCached(fixtureId);
+              sendJson(res, {
+                data: result.data,
+                source: result.source,
+                fixture_id: fixtureId,
+                fetched_at: result.fetchedAt,
+                stale: Boolean(result.stale),
+              });
+              return;
+            }
+            if (!home || !away || !date) {
+              sendJson(res, { data: [], source: "sportmonks", error: "missing params" }, 400);
+              return;
+            }
+            const data = await fetchSportmonksMatchEvents(home, away, date);
+            sendJson(res, { data, source: "sportmonks" });
+            return;
+          }
+
+          if (u.pathname === "/api/localdb/sportmonks-week") {
+            const week = clamp(Number(u.searchParams.get("week") || 24), 1, 38);
+            const result = await getSportmonksWeekFixturesCached(week);
+            sendJson(res, {
+              data: result.data,
+              source: result.source,
+              week,
+              fetched_at: result.fetchedAt,
+              stale: Boolean(result.stale),
+            });
+            return;
+          }
+
+          if (u.pathname === "/api/localdb/live-now") {
+            const live = await getSportmonksLiveNowCached();
+            sendJson(res, {
+              data: live.data,
+              source: live.source,
+              fetched_at: live.fetchedAt,
+              stale: Boolean(live.stale),
+            });
             return;
           }
 

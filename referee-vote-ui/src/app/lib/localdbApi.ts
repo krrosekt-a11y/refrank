@@ -60,6 +60,42 @@ export type UpcomingFixture = {
   status: string;
 };
 
+export type MatchDecisionEvent = {
+  id: string;
+  minute: number;
+  extra_minute: number;
+  type: string;
+  team: string;
+  player: string;
+  related_player?: string;
+  result: string;
+};
+
+export type SportmonksWeekFixture = {
+  fixture_id: number;
+  date: string;
+  league_name: string;
+  round: string;
+  home_team: string;
+  away_team: string;
+  referee: string;
+  status: string;
+  score: string;
+  venue: string;
+};
+
+export type LiveNowFixture = {
+  fixture_id: number;
+  date: string;
+  league_name: string;
+  round: string;
+  home_team: string;
+  away_team: string;
+  status: string;
+  minute: number;
+  score: string;
+};
+
 type SnapshotData = {
   generated_at: string;
   referees: Referee[];
@@ -70,7 +106,9 @@ type SnapshotData = {
   upcoming: UpcomingFixture[];
 };
 
-let snapshotPromise: Promise<SnapshotData | null> | null = null;
+function shouldHideReferee(ref: Referee): boolean {
+  return Number(ref.matches || 0) === 0 && Number(ref.careerScore || 0) >= 9.6;
+}
 
 async function getJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
@@ -80,32 +118,23 @@ async function getJson<T>(url: string): Promise<T> {
   return (await r.json()) as T;
 }
 
-async function getSnapshot(): Promise<SnapshotData | null> {
-  if (!snapshotPromise) {
-    snapshotPromise = fetch("/data/snapshot.json")
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null);
-  }
-  return snapshotPromise;
-}
 
 export async function fetchDbReferees(limit = 120): Promise<Referee[]> {
   try {
     const res = await getJson<{ data: Referee[] }>(`/api/localdb/referees?limit=${limit}`);
-    return res.data || [];
+    return (res.data || []).filter((r) => !shouldHideReferee(r));
   } catch {
-    const snap = await getSnapshot();
-    return (snap?.referees || []).slice(0, limit);
+    return [];
   }
 }
 
 export async function fetchDbReferee(id: string): Promise<Referee | null> {
   try {
     const res = await getJson<{ data: Referee }>(`/api/localdb/referees/${encodeURIComponent(id)}`);
-    return res.data ?? null;
+    if (!res.data) return null;
+    return shouldHideReferee(res.data) ? null : res.data;
   } catch {
-    const snap = await getSnapshot();
-    return (snap?.referees || []).find((r) => r.id === id) || null;
+    return null;
   }
 }
 
@@ -116,8 +145,7 @@ export async function fetchDbRefereeMatches(id: string, limit = 80): Promise<DbM
     );
     return res.data || [];
   } catch {
-    const snap = await getSnapshot();
-    return (snap?.referee_matches_by_id?.[id] || []).slice(0, limit);
+    return [];
   }
 }
 
@@ -128,8 +156,7 @@ export async function fetchDbRefereeTeams(id: string): Promise<TeamCard[]> {
     );
     return res.data || [];
   } catch {
-    const snap = await getSnapshot();
-    return snap?.referee_teams_by_id?.[id] || [];
+    return [];
   }
 }
 
@@ -140,8 +167,7 @@ export async function fetchDbRefereeTeamMatches(id: string, team: string): Promi
     );
     return res.data || [];
   } catch {
-    const snap = await getSnapshot();
-    return snap?.referee_team_matches_by_key?.[`${id}::${team}`] || [];
+    return [];
   }
 }
 
@@ -150,8 +176,7 @@ export async function fetchDbMatches(limit = 120): Promise<DbMatch[]> {
     const res = await getJson<{ data: DbMatch[] }>(`/api/localdb/matches?limit=${limit}`);
     return res.data || [];
   } catch {
-    const snap = await getSnapshot();
-    return (snap?.matches || []).slice(0, limit);
+    return [];
   }
 }
 
@@ -160,12 +185,52 @@ export async function fetchUpcomingFixtures(days = 7): Promise<UpcomingFixture[]
     const res = await getJson<{ data: UpcomingFixture[] }>(`/api/localdb/upcoming-fixtures?days=${days}`);
     return res.data || [];
   } catch {
-    const snap = await getSnapshot();
-    const maxDate = new Date();
-    maxDate.setDate(maxDate.getDate() + days + 1);
-    return (snap?.upcoming || []).filter((f) => {
-      const d = new Date(String(f.date || "").replace(" ", "T"));
-      return !Number.isNaN(d.getTime()) && d <= maxDate;
-    });
+    return [];
+  }
+}
+
+export async function fetchMatchDecisionEvents(params: {
+  fixtureId?: number;
+  homeTeam: string;
+  awayTeam: string;
+  date: string;
+}): Promise<MatchDecisionEvent[]> {
+  try {
+    const byFixture = new URLSearchParams();
+    if (params.fixtureId && Number(params.fixtureId) > 0) {
+      byFixture.set("fixture_id", String(Math.trunc(params.fixtureId)));
+      const res = await getJson<{ data: MatchDecisionEvent[] }>(`/api/localdb/match-events?${byFixture.toString()}`);
+      const rows = res.data || [];
+      if (rows.length > 0) return rows;
+    }
+
+    const byMatch = new URLSearchParams();
+    byMatch.set("home", params.homeTeam);
+    byMatch.set("away", params.awayTeam);
+    byMatch.set("date", params.date);
+    const fallback = await getJson<{ data: MatchDecisionEvent[] }>(`/api/localdb/match-events?${byMatch.toString()}`);
+    return fallback.data || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchSportmonksWeekFixtures(week = 24): Promise<SportmonksWeekFixture[]> {
+  try {
+    const res = await getJson<{ data: SportmonksWeekFixture[] }>(
+      `/api/localdb/sportmonks-week?week=${week}`,
+    );
+    return res.data || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchLiveNowFixture(): Promise<LiveNowFixture | null> {
+  try {
+    const res = await getJson<{ data: LiveNowFixture | null }>(`/api/localdb/live-now`);
+    return res.data || null;
+  } catch {
+    return null;
   }
 }

@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { Referee } from "../data";
 import { HexRating } from "./HexRating";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Heart } from "lucide-react";
 import { motion } from "motion/react";
+import { isFavoriteReferee, toggleFavoriteReferee } from "../lib/favorites";
 
 interface RefereeCardProps {
   referee: Referee;
@@ -17,8 +19,13 @@ const rankColors: Record<number, string> = {
 
 export function RefereeCard({ referee, rank }: RefereeCardProps) {
   const navigate = useNavigate();
+  const [isFavorite, setIsFavorite] = useState(false);
   const rankColor = rank ? rankColors[rank] ?? "#C8FF00" : "#C8FF00";
   const isTop3 = rank !== undefined && rank <= 3;
+
+  useEffect(() => {
+    setIsFavorite(isFavoriteReferee(referee.id));
+  }, [referee.id]);
 
   return (
     <motion.button
@@ -122,6 +129,27 @@ export function RefereeCard({ referee, rank }: RefereeCardProps) {
 
       {/* Score hex */}
       <div className="flex-shrink-0 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsFavorite(toggleFavoriteReferee(referee.id));
+          }}
+          className="flex items-center justify-center rounded-full"
+          style={{
+            width: 28,
+            height: 28,
+            background: isFavorite ? "rgba(255,95,95,0.14)" : "rgba(255,255,255,0.04)",
+            border: `1px solid ${isFavorite ? "rgba(255,95,95,0.45)" : "rgba(255,255,255,0.1)"}`,
+          }}
+          aria-label={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
+        >
+          <Heart
+            size={14}
+            color={isFavorite ? "#FF5F5F" : "#66708A"}
+            fill={isFavorite ? "#FF5F5F" : "none"}
+          />
+        </button>
         <HexRating score={referee.careerScore} size="sm" />
         <ChevronRight size={14} color="rgba(255,255,255,0.2)" />
       </div>

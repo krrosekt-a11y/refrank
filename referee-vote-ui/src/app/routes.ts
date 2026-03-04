@@ -1,10 +1,10 @@
 import { createBrowserRouter, redirect } from "react-router";
 import { Root } from "./Root";
 import { Home } from "./pages/Home";
-import { LeaderboardPage } from "./pages/Leaderboard";
 import { RefereeProfile } from "./pages/RefereeProfile";
 import { VotePage } from "./pages/VotePage";
 import { UserProfilePage } from "./pages/UserProfilePage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { MatchesPage } from "./pages/MatchesPage";
 import { RefereesPage } from "./pages/RefereesPage";
 import { TrendingCommentsPage } from "./pages/TrendingCommentsPage";
@@ -39,12 +39,15 @@ export const router = createBrowserRouter([
       // Main app
       { index: true, Component: Home },
       { path: "matches", Component: MatchesPage },
-      { path: "leaderboard", Component: LeaderboardPage },
+      { path: "matchespage", loader: () => redirect("/matches") },
+      { path: "leaderboard", loader: () => redirect("/") },
       { path: "referee/:id", Component: RefereeProfile },
       { path: "referee/:id/team/:team/cards", Component: TeamCardMatchesPage },
       { path: "referee/:id/vote/:matchId", Component: VotePage },
       { path: "profile", Component: UserProfilePage },
-      { path: "referees", Component: RefereesPage },
+      { path: "settings", Component: SettingsPage },
+      { path: "hakem-listesi", Component: RefereesPage },
+      { path: "referees", loader: () => redirect("/hakem-listesi") },
       { path: "comments", Component: TrendingCommentsPage },
       { path: "performances", Component: AllPerformancesPage },
       // Home variants
@@ -68,6 +71,7 @@ export const router = createBrowserRouter([
       { path: "auth/forgot-otp", Component: ForgotOTPPage },
       { path: "auth/new-password", Component: NewPasswordPage },
       { path: "auth/reset-success", Component: ResetSuccessPage },
+      { path: "*", loader: () => redirect("/") },
     ],
   },
 ]);

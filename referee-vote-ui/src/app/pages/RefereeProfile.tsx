@@ -12,8 +12,9 @@ import {
 } from "recharts";
 import { trendingComments, type Referee } from "../data";
 import { CareerRing } from "../components/CareerRing";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import { fetchDbReferee, fetchDbRefereeMatches, fetchDbRefereeTeams, type DbMatch, type TeamCard } from "../lib/localdbApi";
+import { isFavoriteReferee, toggleFavoriteReferee } from "../lib/favorites";
 
 const badgeInfo: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   elite: { label: "Elit", icon: <Star size={10} />, color: "#FFD600" },
@@ -33,6 +34,9 @@ export function RefereeProfile() {
   const [refMatchesDb, setRefMatchesDb] = useState<DbMatch[]>([]);
   const [teamCards, setTeamCards] = useState<TeamCard[]>([]);
   const [likedComments, setLikedComments] = useState<Set<string>>(new Set());
+  const [showDisciplineInfo, setShowDisciplineInfo] = useState(false);
+  const [showAccuracyInfo, setShowAccuracyInfo] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -60,6 +64,11 @@ export function RefereeProfile() {
     return () => {
       alive = false;
     };
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    setIsFavorite(isFavoriteReferee(id));
   }, [id]);
 
   if (loading) {
@@ -179,20 +188,41 @@ export function RefereeProfile() {
             <ArrowLeft size={20} color="#fff" />
           </motion.button>
 
-          <motion.button
-            whileTap={{ scale: 0.88 }}
-            className="flex items-center justify-center"
-            style={{
-              width: 42,
-              height: 42,
-              borderRadius: 21,
-              background: "rgba(10,10,15,0.6)",
-              border: "1px solid rgba(255,255,255,0.14)",
-              backdropFilter: "blur(16px)",
-            }}
-          >
-            <Share2 size={18} color="#fff" />
-          </motion.button>
+          <div className="flex items-center gap-2">
+            <motion.button
+              whileTap={{ scale: 0.88 }}
+              onClick={() => {
+                if (!id) return;
+                setIsFavorite(toggleFavoriteReferee(id));
+              }}
+              className="flex items-center justify-center"
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 21,
+                background: isFavorite ? "rgba(255,95,95,0.2)" : "rgba(10,10,15,0.6)",
+                border: `1px solid ${isFavorite ? "rgba(255,95,95,0.45)" : "rgba(255,255,255,0.14)"}`,
+                backdropFilter: "blur(16px)",
+              }}
+              aria-label={isFavorite ? "Favoriden çıkar" : "Favoriye ekle"}
+            >
+              <Heart size={18} color={isFavorite ? "#FF5F5F" : "#fff"} fill={isFavorite ? "#FF5F5F" : "none"} />
+            </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.88 }}
+              className="flex items-center justify-center"
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 21,
+                background: "rgba(10,10,15,0.6)",
+                border: "1px solid rgba(255,255,255,0.14)",
+                backdropFilter: "blur(16px)",
+              }}
+            >
+              <Share2 size={18} color="#fff" />
+            </motion.button>
+          </div>
         </div>
 
         {/* Name & info overlay */}
@@ -226,14 +256,60 @@ export function RefereeProfile() {
       </div>
 
       <div className="px-5 pb-8">
-        {/* Career score ring */}
+        {/* Discipline index ring */}
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.1, duration: 0.35 }}
-          className="flex items-center justify-center py-6"
+          className="py-6"
         >
-          <CareerRing score={referee.careerScore} size={168} />
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setShowDisciplineInfo((v) => !v)}
+              className="rounded-full"
+              style={{ cursor: "pointer" }}
+            >
+              <CareerRing score={referee.careerScore} size={168} />
+            </button>
+          </div>
+          <div className="text-center mt-2">
+            <button
+              type="button"
+              onClick={() => setShowDisciplineInfo((v) => !v)}
+              style={{ color: "#8EA0BE", fontSize: 11, textDecoration: "underline" }}
+            >
+              Disiplin Endeksi nedir?
+            </button>
+          </div>
+
+          {showDisciplineInfo && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="mt-3 mx-auto rounded-2xl px-4 py-3"
+              style={{
+                maxWidth: 520,
+                background: "rgba(20,24,34,0.9)",
+                border: "1px solid rgba(255,255,255,0.08)",
+                color: "#B7C1D9",
+                fontSize: 12,
+                lineHeight: 1.55,
+              }}
+            >
+              Disiplin Endeksi, hakemin geçmiş maçlarındaki kart yoğunluğuna göre
+              hesaplanan istatistiksel bir göstergedir. Sarı, kırmızı ve ikinci
+              sarıdan kırmızı kart oranları birlikte değerlendirilir.
+              <br />
+              <span style={{ color: "#DDE6FF" }}>
+                Yüksek değer: daha dengeli ve düşük kart profili.
+              </span>{" "}
+              <span style={{ color: "#DDE6FF" }}>
+                Düşük değer: daha yüksek kart yoğunluğu.
+              </span>
+            </motion.div>
+          )}
         </motion.div>
 
         {/* Badges */}
@@ -314,26 +390,45 @@ export function RefereeProfile() {
             backdropFilter: "blur(12px)",
           }}
         >
-          {[
-            { label: "İsabet", value: `%${referee.accuracy}`, color: "#C8FF00" },
-            { label: "Sarı/Maç", value: referee.yellowCardsPerMatch.toFixed(1), color: "#FFD600" },
-            { label: "Kırmızı/Maç", value: referee.redCardsPerMatch.toFixed(1), color: "#FF3B30" },
-          ].map((item, i) => (
-            <div
-              key={item.label}
-              className="text-center"
-              style={{
-                borderLeft: i > 0 ? "1px solid rgba(255,255,255,0.06)" : "none",
-              }}
-            >
-              <div style={{ color: item.color, fontSize: 18, fontWeight: 800 }}>
-                {item.value}
-              </div>
-              <div style={{ color: "#44445A", fontSize: 10, marginTop: 2 }}>
-                {item.label}
-              </div>
+          <button
+            type="button"
+            onClick={() => setShowAccuracyInfo((v) => !v)}
+            className="text-center"
+            style={{ cursor: "pointer" }}
+          >
+            <div style={{ color: "#C8FF00", fontSize: 18, fontWeight: 800 }}>
+              %{referee.accuracy}
             </div>
-          ))}
+            <div style={{ color: "#44445A", fontSize: 10, marginTop: 2, textDecoration: "underline" }}>
+              İsabet
+            </div>
+          </button>
+          <div
+            className="text-center"
+            style={{
+              borderLeft: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            <div style={{ color: "#FFD600", fontSize: 18, fontWeight: 800 }}>
+              {referee.yellowCardsPerMatch.toFixed(1)}
+            </div>
+            <div style={{ color: "#44445A", fontSize: 10, marginTop: 2 }}>
+              Sarı/Maç
+            </div>
+          </div>
+          <div
+            className="text-center"
+            style={{
+              borderLeft: "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            <div style={{ color: "#FF3B30", fontSize: 18, fontWeight: 800 }}>
+              {referee.redCardsPerMatch.toFixed(1)}
+            </div>
+            <div style={{ color: "#44445A", fontSize: 10, marginTop: 2 }}>
+              Kırmızı/Maç
+            </div>
+          </div>
         </div>
 
         {/* Team card tendencies */}
@@ -803,6 +898,64 @@ export function RefereeProfile() {
           )}
         </motion.div>
       </div>
+
+      <AnimatePresence>
+        {showAccuracyInfo && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] flex items-center justify-center px-5"
+            style={{ background: "rgba(0,0,0,0.58)" }}
+            onClick={() => setShowAccuracyInfo(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full rounded-3xl p-5"
+              style={{
+                maxWidth: 420,
+                background: "rgba(18,22,34,0.98)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
+              }}
+            >
+              <div style={{ color: "#E9F0FF", fontSize: 15, fontWeight: 800, marginBottom: 8 }}>
+                İsabet Oranı Nedir?
+              </div>
+              <div style={{ color: "#B7C1D9", fontSize: 12, lineHeight: 1.6 }}>
+                İsabet oranı, Disiplin Endeksi değerinden türetilen istatistiksel bir göstergedir.
+                Doğrudan VAR ya da doğru karar ölçümü değildir; kart dağılımı ve maç başına kart
+                yoğunluğu üzerinden genel bir tutarlılık sinyali verir.
+                <br />
+                <span style={{ color: "#DDE6FF" }}>
+                  Yüksek oran: daha dengeli kart profili.
+                </span>{" "}
+                <span style={{ color: "#DDE6FF" }}>
+                  Düşük oran: daha yüksek kart yoğunluğu.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAccuracyInfo(false)}
+                className="w-full mt-4 py-3 rounded-2xl"
+                style={{
+                  background: "rgba(200,255,0,0.14)",
+                  border: "1px solid rgba(200,255,0,0.3)",
+                  color: "#C8FF00",
+                  fontSize: 13,
+                  fontWeight: 800,
+                }}
+              >
+                Kapat
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

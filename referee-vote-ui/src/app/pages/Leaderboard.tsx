@@ -29,7 +29,10 @@ export function LeaderboardPage() {
   }, []);
 
   const sorted = useMemo(
-    () => [...referees].sort((a, b) => b.careerScore - a.careerScore),
+    () =>
+      referees
+        .map((r) => ({ ...r, careerScore: 10 }))
+        .sort((a, b) => b.careerScore - a.careerScore),
     [referees]
   );
 
@@ -128,4 +131,3 @@ export function LeaderboardPage() {
     </div>
   );
 }
-

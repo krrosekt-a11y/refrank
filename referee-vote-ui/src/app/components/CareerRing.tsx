@@ -126,7 +126,7 @@ export function CareerRing({ score, size = 140 }: CareerRingProps) {
         letterSpacing="1.5"
         fontWeight="600"
       >
-        KARİYER PUANI
+        DİSİPLİN ENDEKSİ
       </text>
       <text
         x={cx}

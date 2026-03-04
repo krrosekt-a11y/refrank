@@ -15,12 +15,14 @@ import {
   UserX,
   PenLine,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router";
-import { matches, referees } from "../data";
+import type { Referee } from "../data";
 import { CircularGauge } from "../components/CircularGauge";
 import { CategorySlider } from "../components/CategorySlider";
 import { motion, AnimatePresence } from "motion/react";
+import { fetchDbMatches, fetchDbReferee, type DbMatch } from "../lib/localdbApi";
+import { getSavedMatchVote, saveMatchVote } from "../lib/matchVotes";
 
 const CATEGORIES = [
   {
@@ -55,8 +57,9 @@ export function VotePage() {
   const { id, matchId } = useParams();
   const navigate = useNavigate();
 
-  const match = matches.find((m) => m.id === matchId);
-  const referee = referees.find((r) => r.id === id);
+  const [dbMatch, setDbMatch] = useState<DbMatch | null>(null);
+  const [referee, setReferee] = useState<Referee | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const [overall, setOverall] = useState(7.0);
   const [categories, setCategories] = useState<Record<CategoryKey, number>>({
@@ -70,7 +73,74 @@ export function VotePage() {
   const [showCategories, setShowCategories] = useState(true);
   const [commentFocused, setCommentFocused] = useState(false);
 
-  if (!match || !referee) {
+  useEffect(() => {
+    if (!id || !matchId) {
+      setLoading(false);
+      return;
+    }
+    let alive = true;
+    Promise.all([fetchDbReferee(id), fetchDbMatches(1200)])
+      .then(([ref, allMatches]) => {
+        if (!alive) return;
+        const found = allMatches.find((m) => String(m.id) === String(matchId)) || null;
+        setReferee(ref);
+        setDbMatch(found);
+        const saved = getSavedMatchVote(String(matchId), String(id));
+        if (saved) {
+          setOverall(saved.overall);
+          setCategories({
+            matchControl: saved.matchControl,
+            cardDecisions: saved.cardDecisions,
+            penaltyDecisions: saved.penaltyDecisions,
+            gameFlow: saved.gameFlow,
+          });
+          setComment(saved.comment || "");
+        }
+      })
+      .catch(() => {
+        if (!alive) return;
+        setReferee(null);
+        setDbMatch(null);
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, matchId]);
+
+  const match = useMemo(() => {
+    if (!dbMatch) return null;
+    const parsed = String(dbMatch.score || "").match(/(\d+)\s*[-:]\s*(\d+)/);
+    const homeScore = parsed ? Number(parsed[1]) : undefined;
+    const awayScore = parsed ? Number(parsed[2]) : undefined;
+    const matchDate = new Date(String(dbMatch.date || "").replace(" ", "T"));
+    const now = Date.now();
+    const status = !Number.isNaN(matchDate.getTime()) && matchDate.getTime() <= now ? "finished" : "upcoming";
+    return {
+      id: String(dbMatch.id),
+      homeTeam: dbMatch.homeTeam,
+      awayTeam: dbMatch.awayTeam,
+      homeScore,
+      awayScore,
+      date: dbMatch.date,
+      league: dbMatch.league,
+      stadium: dbMatch.league || "Stadyum",
+      status,
+      minute: undefined as number | undefined,
+    };
+  }, [dbMatch]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen" style={{ background: "#0A0A0F", color: "#666677" }}>
+        Veriler yükleniyor...
+      </div>
+    );
+  }
+
+  if (!match || !referee || !id || !matchId) {
     return (
       <div
         className="flex flex-col items-center justify-center min-h-screen"
@@ -539,7 +609,25 @@ export function VotePage() {
         <motion.button
           whileTap={{ scale: 0.96 }}
           whileHover={{ boxShadow: "0 0 40px rgba(200,255,0,0.4)" }}
-          onClick={() => setSubmitted(true)}
+          onClick={() => {
+            saveMatchVote({
+              matchId: String(matchId),
+              refereeId: String(id),
+              overall,
+              average: avgScore,
+              matchControl: categories.matchControl,
+              cardDecisions: categories.cardDecisions,
+              penaltyDecisions: categories.penaltyDecisions,
+              gameFlow: categories.gameFlow,
+              comment,
+              submittedAt: new Date().toISOString(),
+              homeTeam: match.homeTeam,
+              awayTeam: match.awayTeam,
+              refereeName: referee.name,
+              refereePhoto: referee.photo,
+            });
+            setSubmitted(true);
+          }}
           className="w-full py-4 rounded-3xl flex items-center justify-center gap-3"
           style={{
             background: "linear-gradient(135deg, #C8FF00 0%, #AAEE00 100%)",
