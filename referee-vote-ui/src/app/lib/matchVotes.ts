@@ -1,18 +1,7 @@
-import { createClient } from "@supabase/supabase-js";
 import { getOrCreateVoteUserKey } from "./liveVotes";
+import { supabase } from "./supabaseConfig";
 
 const MATCH_VOTES_KEY = "refscore_match_votes_v1";
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
-const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  "";
-
-const supabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
-
 export type SavedMatchVote = {
   matchId: string;
   refereeId: string;

@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "./supabaseConfig";
 
 type VoteRow = {
   incident_id: string;
@@ -16,17 +16,7 @@ export type IncidentVoteStat = {
   average: number | null;
 };
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
-const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  "";
 const USER_KEY_STORAGE = "refscore_live_vote_user_key_v1";
-
-const supabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
 
 export function isLiveVotesConfigured(): boolean {
   return Boolean(supabase);

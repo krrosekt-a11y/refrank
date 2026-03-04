@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "./supabaseConfig";
 
 export type CloudDecisionVoteItem = {
   incidentId: string;
@@ -10,17 +10,6 @@ export type CloudDecisionVoteItem = {
   score: number;
   votedAt: string;
 };
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
-const SUPABASE_ANON_KEY =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  "";
-
-const supabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
 
 export function isDecisionVotesCloudConfigured(): boolean {
   return Boolean(supabase);
@@ -71,4 +60,3 @@ export async function listDecisionVotesCloud(
     votedAt: String(row.voted_at || ""),
   }));
 }
-
