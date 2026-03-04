@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;0,14..32,800;0,14..32,900;1,14..32,700;1,14..32,900&display=swap');
+
+* {
+  font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Inter', BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: #050508;
+  overflow-x: hidden;
+}
+
+/* iOS 26 - hide all scrollbars for native feel */
+::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Smooth scroll momentum */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* iOS 26 smooth spring-like button interactions */
+button {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+/* Active states */
+button:active {
+  transform: scale(0.96);
+}
+
+/* Glass morphism utility */
+.glass {
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  background: rgba(22, 22, 30, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* iOS 26 safe area */
+.safe-top {
+  padding-top: max(env(safe-area-inset-top), 48px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}

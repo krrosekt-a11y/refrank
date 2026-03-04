@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Builds
+.next/
+dist/
+
+# Local runtime/temp
+.run/
+/tmp/
+*.log
+
+# Local DB/backups
+backups/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Misc
+=
+
+# Local SQLite databases (too large for git)
+data/*.db
+data/*.db-shm
+data/*.db-wal
