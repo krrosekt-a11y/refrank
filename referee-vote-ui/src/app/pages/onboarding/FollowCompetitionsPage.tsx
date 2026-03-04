@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ChevronRight, Check, Trophy } from "lucide-react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";

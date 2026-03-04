@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router";
+import { createBrowserRouter, redirect } from "react-router";
 import { Root } from "./Root";
 import { Home } from "./pages/Home";
 import { LeaderboardPage } from "./pages/Leaderboard";
@@ -29,8 +29,6 @@ import { HomeFitPage } from "./pages/HomeFitPage";
 import { SportMenuPage } from "./pages/SportMenuPage";
 import { HomeLivePage } from "./pages/HomeLivePage";
 import { HomeCalendarPage } from "./pages/HomeCalendarPage";
-// Search
-import { SearchPage } from "./pages/SearchPage";
 import { TeamCardMatchesPage } from "./pages/TeamCardMatchesPage";
 
 export const router = createBrowserRouter([
@@ -54,8 +52,7 @@ export const router = createBrowserRouter([
       { path: "home/sport-menu", Component: SportMenuPage },
       { path: "home/live", Component: HomeLivePage },
       { path: "home/calendar", Component: HomeCalendarPage },
-      // Search
-      { path: "search", Component: SearchPage },
+      { path: "search", loader: () => redirect("/matches") },
       // Onboarding
       { path: "splash", Component: SplashScreen },
       { path: "onboarding/welcome", Component: WelcomePage },
