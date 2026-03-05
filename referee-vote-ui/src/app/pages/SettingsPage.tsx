@@ -34,6 +34,7 @@ import {
   Check,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { useAuth } from "../auth/AuthProvider";
 
 type ThemeMode = "dark" | "light" | "system";
 type Language = "tr" | "en" | "de" | "fr";
@@ -47,6 +48,7 @@ const languageLabels: Record<Language, string> = {
 
 export function SettingsPage() {
   const navigate = useNavigate();
+  const { signOut } = useAuth();
 
   const [pushEnabled, setPushEnabled] = useState(true);
   const [matchAlerts, setMatchAlerts] = useState(true);
@@ -523,8 +525,9 @@ export function SettingsPage() {
 
               <motion.button
                 whileTap={{ scale: 0.97 }}
-                onClick={() => {
+                onClick={async () => {
                   setShowLogoutDialog(false);
+                  await signOut();
                   navigate("/auth/signin");
                 }}
                 className="w-full py-4 rounded-2xl mb-3"

@@ -1,16 +1,22 @@
-import { Outlet, useLocation } from "react-router";
+import { Navigate, Outlet, useLocation } from "react-router";
 import { BottomNav } from "./components/BottomNav";
 import { motion, AnimatePresence } from "motion/react";
 import { useEffect, useState } from "react";
 import { ShieldCheck } from "lucide-react";
+import { useAuth } from "./auth/AuthProvider";
 
 const HIDE_NAV_PREFIXES = ["/splash", "/onboarding", "/auth"];
+const PUBLIC_PREFIXES = ["/splash", "/onboarding", "/auth"];
 
 export function Root() {
   const location = useLocation();
+  const { user, loading } = useAuth();
   const [showLaunch, setShowLaunch] = useState(true);
   const isVotePage = location.pathname.includes("/vote");
   const isHideNavRoute = HIDE_NAV_PREFIXES.some((p) =>
+    location.pathname.startsWith(p)
+  );
+  const isPublicRoute = PUBLIC_PREFIXES.some((p) =>
     location.pathname.startsWith(p)
   );
   const showNav = !isVotePage && !isHideNavRoute;
@@ -19,6 +25,18 @@ export function Root() {
     const t = setTimeout(() => setShowLaunch(false), 1200);
     return () => clearTimeout(t);
   }, []);
+
+  if (!loading && !user && !isPublicRoute) {
+    return <Navigate to="/auth/signin" replace />;
+  }
+
+  if (
+    !loading &&
+    user &&
+    (location.pathname === "/auth/signin" || location.pathname === "/auth/signup")
+  ) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <div

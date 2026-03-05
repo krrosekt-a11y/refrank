@@ -1,4 +1,5 @@
 import { supabase } from "./supabaseConfig";
+import { AUTH_USER_KEY_STORAGE } from "../auth/AuthProvider";
 
 type VoteRow = {
   incident_id: string;
@@ -24,6 +25,8 @@ export function isLiveVotesConfigured(): boolean {
 
 export function getOrCreateVoteUserKey(): string {
   if (typeof window === "undefined") return "local-dev-user";
+  const authUserKey = window.localStorage.getItem(AUTH_USER_KEY_STORAGE);
+  if (authUserKey) return authUserKey;
   const existing = window.localStorage.getItem(USER_KEY_STORAGE);
   if (existing) return existing;
   const generated =

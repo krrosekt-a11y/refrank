@@ -2,9 +2,11 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
+import { useAuth } from "../../auth/AuthProvider";
 
 export function SignInPage() {
   const navigate = useNavigate();
+  const { signIn, configured } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
@@ -15,14 +17,20 @@ export function SignInPage() {
 
   const canSubmit = email && password.length >= 6;
 
-  const handleSignIn = () => {
+  const handleSignIn = async () => {
     if (!canSubmit) return;
     setLoading(true);
     setError("");
-    setTimeout(() => {
+    try {
+      await signIn(email.trim(), password);
       setLoading(false);
       navigate("/");
-    }, 1200);
+    } catch (err: any) {
+      setLoading(false);
+      setError(
+        err?.message || "Giriş başarısız. E-posta veya şifreni kontrol et."
+      );
+    }
   };
 
   return (
@@ -67,6 +75,19 @@ export function SignInPage() {
 
       <div className="flex-1 px-6 relative z-10">
         {/* Error */}
+        {!configured && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 px-4 py-3 rounded-2xl"
+            style={{ background: "rgba(255,95,95,0.1)", border: "1px solid rgba(255,95,95,0.25)" }}
+          >
+            <span style={{ color: "#FF5F5F", fontSize: 13 }}>
+              Supabase yapılandırması eksik. Giriş aktif değil.
+            </span>
+          </motion.div>
+        )}
+
         {error && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
@@ -143,7 +164,7 @@ export function SignInPage() {
         <motion.button
           whileTap={{ scale: canSubmit ? 0.97 : 1 }}
           onClick={handleSignIn}
-          disabled={loading}
+          disabled={loading || !configured}
           className="w-full flex items-center justify-center py-4 rounded-2xl mb-5"
           style={{
             background: canSubmit

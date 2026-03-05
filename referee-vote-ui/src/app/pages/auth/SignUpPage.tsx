@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import { Eye, EyeOff, Mail, Lock, User, ChevronRight } from "lucide-react";
+import { useAuth } from "../../auth/AuthProvider";
 
 function InputField({
   label, placeholder, value, onChange, type = "text",
@@ -43,13 +44,43 @@ function InputField({
 
 export function SignUpPage() {
   const navigate = useNavigate();
+  const { signUp, configured } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [agreed, setAgreed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
 
   const canSubmit = name && email && password.length >= 6 && agreed;
+
+  const handleSignUp = async () => {
+    if (!canSubmit || loading || !configured) return;
+    setLoading(true);
+    setError("");
+    setInfo("");
+    try {
+      const { requiresEmailVerification } = await signUp(
+        email.trim(),
+        password,
+        name.trim()
+      );
+      if (requiresEmailVerification) {
+        setInfo(
+          "Hesap oluşturuldu. E-postanı doğruladıktan sonra giriş yapabilirsin."
+        );
+        navigate("/auth/signin");
+      } else {
+        navigate("/auth/complete-profile");
+      }
+    } catch (err: any) {
+      setError(err?.message || "Kayıt başarısız. Bilgileri kontrol et.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="flex flex-col min-h-screen" style={{ background: "#0A0A0F" }}>
@@ -67,6 +98,33 @@ export function SignUpPage() {
       </div>
 
       <div className="flex-1 px-6">
+        {!configured && (
+          <div
+            className="mb-4 px-4 py-3 rounded-2xl"
+            style={{ background: "rgba(255,95,95,0.1)", border: "1px solid rgba(255,95,95,0.25)" }}
+          >
+            <span style={{ color: "#FF5F5F", fontSize: 13 }}>
+              Supabase yapılandırması eksik. Kayıt aktif değil.
+            </span>
+          </div>
+        )}
+        {error && (
+          <div
+            className="mb-4 px-4 py-3 rounded-2xl"
+            style={{ background: "rgba(255,95,95,0.1)", border: "1px solid rgba(255,95,95,0.25)" }}
+          >
+            <span style={{ color: "#FF5F5F", fontSize: 13 }}>{error}</span>
+          </div>
+        )}
+        {info && (
+          <div
+            className="mb-4 px-4 py-3 rounded-2xl"
+            style={{ background: "rgba(200,255,0,0.12)", border: "1px solid rgba(200,255,0,0.25)" }}
+          >
+            <span style={{ color: "#C8FF00", fontSize: 13 }}>{info}</span>
+          </div>
+        )}
+
         <InputField label="Ad Soyad" placeholder="Adın ve soyadın" value={name} onChange={setName} icon={User} />
         <InputField label="E-posta" placeholder="ornek@mail.com" value={email} onChange={setEmail} type="email" icon={Mail} />
         <InputField
@@ -129,7 +187,8 @@ export function SignUpPage() {
         {/* Submit */}
         <motion.button
           whileTap={{ scale: canSubmit ? 0.97 : 1 }}
-          onClick={() => canSubmit && navigate("/auth/complete-profile")}
+          onClick={handleSignUp}
+          disabled={!canSubmit || loading || !configured}
           className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl mb-5"
           style={{
             background: canSubmit
@@ -140,7 +199,7 @@ export function SignUpPage() {
           }}
         >
           <span style={{ color: canSubmit ? "#0A0A0F" : "#333344", fontSize: 16, fontWeight: 800 }}>
-            Hesap Oluştur
+            {loading ? "Oluşturuluyor..." : "Hesap Oluştur"}
           </span>
           {canSubmit && <ChevronRight size={18} color="#0A0A0F" strokeWidth={2.5} />}
         </motion.button>

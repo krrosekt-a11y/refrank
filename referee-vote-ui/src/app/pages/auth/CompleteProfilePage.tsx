@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import { ChevronRight, Camera, Cat, CircleDot, Trophy, Bird, Flame, Zap, Target, Star, Crown, ThumbsUp, Gamepad2, Gem } from "lucide-react";
+import { useAuth } from "../../auth/AuthProvider";
 
 const TEAMS = ["Galatasaray", "Fenerbahçe", "Beşiktaş", "Trabzonspor", "Başakşehir", "Diğer"];
 
@@ -23,15 +24,37 @@ const AVATARS: { id: AvatarId; Icon: React.ComponentType<{ size?: number; color?
 
 export function CompleteProfilePage() {
   const navigate = useNavigate();
+  const { updateProfile } = useAuth();
   const [avatarId, setAvatarId] = useState<AvatarId>("cat");
   const [username, setUsername] = useState("");
   const [favTeam, setFavTeam] = useState("");
   const [bio, setBio] = useState("");
   const [showAvatars, setShowAvatars] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   const canSubmit = username.length >= 3 && favTeam;
   const selectedAvatar = AVATARS.find((a) => a.id === avatarId)!;
   const AvatarIcon = selectedAvatar.Icon;
+
+  const handleSaveProfile = async () => {
+    if (!canSubmit || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await updateProfile({
+        username: username.trim(),
+        favorite_team: favTeam,
+        bio: bio.trim(),
+        avatar_id: avatarId,
+      });
+      navigate("/auth/success");
+    } catch (err: any) {
+      setError(err?.message || "Profil kaydedilemedi. Tekrar dene.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="flex flex-col min-h-screen" style={{ background: "#0A0A0F" }}>
@@ -47,6 +70,15 @@ export function CompleteProfilePage() {
       </div>
 
       <div className="flex-1 px-6 pb-4 overflow-y-auto">
+        {error && (
+          <div
+            className="mb-4 px-4 py-3 rounded-2xl"
+            style={{ background: "rgba(255,95,95,0.1)", border: "1px solid rgba(255,95,95,0.25)" }}
+          >
+            <span style={{ color: "#FF5F5F", fontSize: 13 }}>{error}</span>
+          </div>
+        )}
+
         {/* Avatar selector */}
         <div className="flex flex-col items-center mb-6">
           <motion.button
@@ -186,7 +218,8 @@ export function CompleteProfilePage() {
       <div className="px-6 pb-14 pt-2">
         <motion.button
           whileTap={{ scale: canSubmit ? 0.97 : 1 }}
-          onClick={() => canSubmit && navigate("/auth/success")}
+          onClick={handleSaveProfile}
+          disabled={!canSubmit || saving}
           className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl"
           style={{
             background: canSubmit
@@ -197,7 +230,7 @@ export function CompleteProfilePage() {
           }}
         >
           <span style={{ color: canSubmit ? "#0A0A0F" : "#333344", fontSize: 16, fontWeight: 800 }}>
-            Profili Kaydet
+            {saving ? "Kaydediliyor..." : "Profili Kaydet"}
           </span>
           {canSubmit && <ChevronRight size={18} color="#0A0A0F" strokeWidth={2.5} />}
         </motion.button>
